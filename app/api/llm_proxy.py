@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from app.config import get_settings
 from app.llm.gemini_client import complete, stream_completion
 from app.llm.prompt import render_system_prompt
+from app.telephony.vapi_adapter import verify_vapi_secret
 
 logger = logging.getLogger(__name__)
 
@@ -31,20 +32,6 @@ _WHITELIST = frozenset(
 )
 
 _logged_first_shape = False
-
-
-def _verify_vapi_secret(request: Request) -> None:
-    """Accept Authorization: Bearer <secret> or x-vapi-secret. Empty config is closed."""
-    expected = get_settings().vapi_server_secret
-    if not expected:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    authorization = request.headers.get("authorization", "")
-    bearer = ""
-    if authorization.lower().startswith("bearer "):
-        bearer = authorization[7:].strip()
-    header_secret = request.headers.get("x-vapi-secret", "")
-    if bearer != expected and header_secret != expected:
-        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 def _extract_caller_number(body: dict[str, Any]) -> str:
@@ -98,7 +85,7 @@ def _maybe_log_first_shape(body: dict[str, Any]) -> None:
 @router.post("/chat/completions")
 async def chat_completions(request: Request) -> Any:
     """OpenAI chat-completions shape. Not wrapped in the {data, error} envelope."""
-    _verify_vapi_secret(request)
+    verify_vapi_secret(request)
     try:
         body = await request.json()
     except Exception as exc:

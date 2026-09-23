@@ -8,8 +8,8 @@ Handoff doc for continuing this take-home. Read this first in a new chat, then `
 |---|---|---|
 | **1** Skeleton + DB | **DONE** | FastAPI app, JSON logs, envelope handlers, `/health`, Supabase schema + seed |
 | **2** REST API + deploy | **DONE** | Validators, PatientService, CRUD `/patients`, Railway US East live, redeploy persistence confirmed |
-| **3** LLM proxy + key pool | **DONE** | Streaming `/llm/chat/completions`, key rotation, spoken fallback, prompt renderer |
-| **4** Vapi + first real call | NOT STARTED | Next |
+| **3** LLM proxy + key pool | **DONE** | Streaming `/llm/chat/completions`, key rotation, spoken fallback; local + Railway verified |
+| **4** Vapi + first real call | **CODE DONE** | Webhook + tools live in repo; assistant.json checked in. Vapi dashboard + first calls still needed |
 | **5** Edge cases + prompt | NOT STARTED | |
 | **6** Docs + cheap bonuses | NOT STARTED | |
 | **7** Final check + submit | NOT STARTED | |
@@ -18,6 +18,8 @@ Handoff doc for continuing this take-home. Read this first in a new chat, then `
 
 - **API / Railway:** `https://carecloud-project.up.railway.app` (US East)
 - **Custom LLM URL for Vapi:** `https://carecloud-project.up.railway.app/llm` (Vapi appends `/chat/completions`)
+- **Webhook:** `https://carecloud-project.up.railway.app/vapi/webhook`
+- **Vapi phone / assistant id:** not created yet (needs a Vapi account)
 - **GitHub:** `https://github.com/izoo2003/CareCloud-Project` (branch `main`)
 - **Supabase:** project `CareCloud-Project`, ref `ozkflnaxsbxgfyzqiexw`, region `us-east-1`
 - **DB:** session pooler `aws-0-us-east-1.pooler.supabase.com:5432` via `postgresql+asyncpg://` in `.env` (gitignored) and Railway Variables
@@ -42,15 +44,15 @@ Handoff doc for continuing this take-home. Read this first in a new chat, then `
 - Shared service rule: REST and future voice tools use the same layer
 - Railway checkpoint: `/health` 200 connected; list Jane/John; POST Casey Rivera 201; invalid POST 422; **redeploy confirmed** — Supabase rows still present (scenario 23)
 
-### Phase 3
+### Phase 3 (complete)
 - Key pool [`app/llm/key_pool.py`](app/llm/key_pool.py): LRU acquire, 429 cooldown (Retry-After or 60s), 5xx/timeout 10s, 401/403 disable, masked `/health`
 - Prompt [`app/llm/prompt.py`](app/llm/prompt.py): section-commented canonical prompt; renders clinic, today (clinic TZ), caller / last-4
 - Client [`app/llm/gemini_client.py`](app/llm/gemini_client.py): OpenAI-compatible Gemini stream + JSON; retries only before first chunk; fallback model; spoken fallback line; fills missing tool_call `id`/`index`
 - Proxy [`app/api/llm_proxy.py`](app/api/llm_proxy.py): `POST /llm/chat/completions` — Bearer or `x-vapi-secret`; whitelist; replace system message; SSE default
 - Models: primary `gemini-3.5-flash-lite`, fallback `gemini-3.8-flash`, `GEMINI_REASONING_EFFORT=low` (Gemini 3 cannot use `none`)
-- Local checkpoint: **16/16** unit tests; local curl streamed tokens + `[DONE]`; `llm_request` log had `key_index`, `ttft_ms`, `outcome=success`; forced 429 rotation covered by test
-- `/health` gemini object now includes `available`, `cooling_down`, `disabled` (keys still masked)
-- GitHub `main` @ `cea3d93`. Railway was still serving Phase 2 (`POST /llm` → 404, gemini `configured: false`) after push — trigger a redeploy in the Railway dashboard and paste the Phase 3 vars below. Do not start Phase 4 until Railway `/llm/chat/completions` streams.
+- Local checkpoint: **16/16** unit tests; local curl streamed tokens + `[DONE]`; forced 429 rotation covered by test
+- Railway checkpoint (manual redeploy + env vars): `GET /health` → gemini `configured: true`, `available: 1`, masked key; `POST /llm/chat/completions` without secret → **401** (route live, auth enforced)
+- Note: GitHub push did not always auto-redeploy; confirm Railway Source → auto-deploy on `main` if that matters for Phase 4+
 
 ### Seed / demo patients in DB (active)
 - Jane Doe `5125550101`
@@ -58,11 +60,17 @@ Handoff doc for continuing this take-home. Read this first in a new chat, then `
 - Casey Rivera `5125550144` (created on Railway during Phase 2 check)
 - Riley Nguyen was soft-deleted during local testing (should not appear in GET list)
 
-## What's NOT built yet (do not start until Phase 4+)
+### Phase 4 (code complete; live Vapi still pending)
+- Adapter [`app/telephony/vapi_adapter.py`](app/telephony/vapi_adapter.py): shared `verify_vapi_secret`, both tool-call shapes, result formatter
+- Handlers [`app/services/tool_handlers.py`](app/services/tool_handlers.py): lookup / register / update via `PatientService`
+- Route [`app/api/vapi.py`](app/api/vapi.py): `POST /vapi/webhook` — 200 after auth even on tool errors
+- Config [`vapi/assistant.json`](vapi/assistant.json): Custom LLM URL, tools, first message, Deepgram nova-3, Savannah, endCall
+- Tests: [`tests/test_tools.py`](tests/test_tools.py) — both payload shapes, 401, lookup, register, validation, DB failure, end-of-call ACK
 
-- Vapi assistant + free US number
-- `/vapi/webhook` tool dispatcher (`lookup_patient_by_phone`, `register_patient`, `update_patient`)
-- Dashboard, call_logs writes, appointments, full pytest suite, README (Phases 5–6)
+## What's NOT built yet (Phase 5+)
+
+- Live Vapi assistant + free US number (dashboard step; `VAPI_API_KEY` is empty)
+- Dashboard, call_logs writes, appointments, full pytest suite, README
 
 ## Manual setup already done
 
@@ -71,9 +79,10 @@ Handoff doc for continuing this take-home. Read this first in a new chat, then `
 - [x] Python `.venv` + deps (incl. `tzdata` on Windows)
 - [x] GitHub repo pushed (`main`)
 - [x] Railway from GitHub, US East, public URL live
-- [x] Gemini key + `gemini-3.5-flash-lite` / `gemini-3.8-flash` confirmed locally
-- [ ] Railway dashboard: redeploy latest `main`, then set `GEMINI_API_KEYS`, `GEMINI_MODEL=gemini-3.5-flash-lite`, `GEMINI_FALLBACK_MODEL=gemini-3.8-flash`, `GEMINI_REASONING_EFFORT=low`, `VAPI_SERVER_SECRET` (copy from local `.env`). Confirm `GET /health` shows gemini `available` and `configured: true`.
+- [x] Gemini key + models confirmed locally and on Railway
+- [x] Railway Variables: `GEMINI_API_KEYS`, `GEMINI_MODEL`, `GEMINI_FALLBACK_MODEL`, `GEMINI_REASONING_EFFORT=low`, `VAPI_SERVER_SECRET` (same as local `.env`)
 - [ ] Vapi account / free US number (needed Phase 4)
+- [ ] Optional: fix Railway auto-deploy from GitHub if pushes should deploy without a dashboard Redeploy
 
 ## Conflicts / decisions already resolved (from Step 1)
 
@@ -81,12 +90,14 @@ Handoff doc for continuing this take-home. Read this first in a new chat, then `
 - Dashboard / call transcript endpoint = bonus timing; `end-of-call-report` → call_logs needed for scenario 14 in Phase 5
 - Do not create empty `appointment_service` / `call_log_service` until those features ship
 - Gemini 3.x cannot disable thinking; use `reasoning_effort=low` and drop the param if a model 400s
+- `VAPI_API_KEY` is optional (sync script only); runtime needs `VAPI_SERVER_SECRET` only
 
-## Next step: Phase 4
+## Next step: finish Phase 4 live calls
 
-Follow [`.cursor/rules/05-build-plan.mdc`](.cursor/rules/05-build-plan.mdc) Phase 4 and [`.cursor/rules/03-voice-agent.mdc`](.cursor/rules/03-voice-agent.mdc).
+`VAPI_API_KEY` is empty, so the assistant cannot be created from this repo. In the Vapi dashboard:
 
-1. Confirm Railway `/health` shows gemini `configured: true` and curl `https://carecloud-project.up.railway.app/llm/chat/completions` streams
-2. Create Vapi assistant: Custom LLM URL `https://carecloud-project.up.railway.app/llm`, same server secret, tools + first message
-3. `POST /vapi/webhook` dispatcher: lookup, register, update
-4. Web call AND phone call complete a registration; row appears in `GET /patients`
+1. Create a Custom LLM credential: URL `https://carecloud-project.up.railway.app/llm`, API key = Railway `VAPI_SERVER_SECRET`.
+2. Create an assistant matching [`vapi/assistant.json`](vapi/assistant.json). Leave Vapi's system prompt empty. Server URL `https://carecloud-project.up.railway.app/vapi/webhook`, same secret. Server messages: `tool-calls`, `end-of-call-report`, `status-update`.
+3. Create a free U.S. number and attach it to the assistant.
+4. Web call ("Talk to assistant") then a phone call: required fields only, decline optionals, hear "You're all set". Confirm the row on `GET /patients`.
+5. If the custom LLM is silent, switch the assistant to Vapi's built-in Google provider (one key) and keep going.

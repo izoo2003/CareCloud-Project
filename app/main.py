@@ -14,6 +14,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.health import router as health_router
 from app.api.llm_proxy import router as llm_router
 from app.api.patients import router as patients_router
+from app.api.vapi import router as vapi_router
 from app.config import get_settings
 from app.core.errors import DatabaseUnavailable, NotFound, ValidationFailed
 from app.core.logging import RequestIdMiddleware, configure_logging
@@ -56,6 +57,7 @@ def create_app() -> FastAPI:
     application.include_router(health_router)
     application.include_router(patients_router)
     application.include_router(llm_router)
+    application.include_router(vapi_router)
     _register_exception_handlers(application)
     return application
 
