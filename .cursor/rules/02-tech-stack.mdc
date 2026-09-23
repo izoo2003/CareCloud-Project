@@ -1,0 +1,142 @@
+---
+description: Tech stack, free-tier constraints, folder structure, layering rules, env vars, Gemini key rotation spec and deployment gotchas. Follow for all code and infra decisions.
+globs:
+alwaysApply: true
+---
+
+# Tech Stack & Architecture
+
+## Stack (all free for this assessment)
+| Layer | Choice | Free tier notes | Why |
+|---|---|---|---|
+| Telephony + STT + TTS | Vapi | Free U.S. number (inbound works, outbound does not), ~$10 signup credit, no card | Handles phone, speech, turn-taking and barge-in, so we focus on prompt, tools and backend |
+| LLM | Gemini via Google AI Studio, OpenAI-compatible endpoint | Free tier, rate limited per Google Cloud project (RPM + RPD) | Free, fast Flash/Flash-Lite models, supports tool calling + streaming |
+| LLM access pattern | Vapi "Custom LLM" -> our FastAPI proxy -> Gemini | n/a | Lets us own the prompt in code, rotate keys, add fallbacks and log latency |
+| Backend | FastAPI, Python 3.12 | n/a | Async, Pydantic v2 validation, auto OpenAPI docs at /docs |
+| Database | Supabase Postgres | Free project; pauses after ~1 week of inactivity | Real Postgres constraints, external to app so data survives redeploys |
+| Hosting | Railway (US East region) | 30-day trial with $5 credit | Always-on container, no cold starts, deploy from GitHub |
+| Dashboard | Served by FastAPI at /dashboard | n/a | One deploy, one URL. No separate Vercel app needed |
+
+## Python dependencies
+fastapi, uvicorn[standard], pydantic>=2, pydantic-settings, email-validator, sqlalchemy[asyncio]>=2, asyncpg,
+openai (used as the client for Gemini's OpenAI-compatible endpoint), httpx, jinja2, python-json-logger (or structlog),
+dev: pytest, pytest-asyncio, ruff.
+
+## Folder structure
+```
+app/
+  main.py                 # FastAPI app factory, routers, exception handlers, startup/shutdown
+  config.py               # pydantic-settings Settings, single source of env config
+  api/
+    patients.py           # REST routes only. No SQL, no business rules
+    vapi.py               # POST /vapi/webhook (tool-calls, end-of-call-report, status-update)
+    llm_proxy.py          # POST /llm/chat/completions (OpenAI-compatible, SSE)
+    dashboard.py          # GET /dashboard
+    health.py             # GET /health
+  telephony/
+    vapi_adapter.py       # Parse Vapi payloads, verify secret, format tool results. Only place that knows Vapi's shapes
+  llm/
+    key_pool.py           # Gemini key rotation + cooldowns
+    gemini_client.py      # Streaming completion with retries/fallback model
+    prompt.py             # Canonical system prompt, section-commented, rendered with date + caller ID
+  services/
+    patient_service.py    # create/get/list/update/soft_delete/find_by_phone. Used by REST AND tools
+    tool_handlers.py      # Maps tool names -> service calls -> LLM-friendly results
+    appointment_service.py
+    call_log_service.py
+  db/
+    session.py            # async engine + session dependency
+    models.py             # SQLAlchemy models
+  schemas/
+    patient.py            # PatientCreate / PatientUpdate / PatientOut + normalizers
+    envelope.py           # ApiResponse, ApiError
+  core/
+    validators.py         # phone, state, zip, name, dob, sex normalization (pure functions, unit-tested)
+    logging.py            # JSON logging, request id middleware, PII-aware helpers
+    errors.py             # Domain exceptions: NotFound, ValidationFailed, DatabaseUnavailable
+  templates/dashboard.html
+supabase/
+  migrations/001_init.sql
+  seed.sql
+vapi/
+  assistant.json          # Exported Vapi assistant config (tools, voice, transcriber) for version control
+tests/
+.env.example
+README.md
+Dockerfile (or railway.json / Procfile)
+```
+
+## Layering rules (reviewers score separation of concerns)
+- `api/` handles HTTP only: parse, call service, wrap in envelope.
+- `telephony/` is the only code that understands Vapi request/response shapes.
+- `llm/` knows nothing about patients or the DB.
+- `services/` owns business rules and is the only caller of `db/`.
+- `core/validators.py` is pure and reused by Pydantic schemas. DB CHECK constraints mirror the same rules.
+- No raw SQL string formatting anywhere. Use SQLAlchemy expressions or bound parameters.
+
+## Environment variables
+| Var | Example | Purpose |
+|---|---|---|
+| APP_ENV | production | `development` enables debug helpers like SIMULATE_DB_FAILURE |
+| LOG_LEVEL | INFO | Logging level |
+| DATABASE_URL | postgresql+asyncpg://postgres.xxxx:pwd@aws-0-us-east-1.pooler.supabase.com:5432/postgres | Supabase SESSION pooler string (IPv4) |
+| GEMINI_API_KEYS | key1,key2,key3 | Comma-separated. Each key from a DIFFERENT Google Cloud project (keys in one project share quota) |
+| GEMINI_BASE_URL | https://generativelanguage.googleapis.com/v1beta/openai/ | OpenAI-compatible base |
+| GEMINI_MODEL | (fastest current Flash-Lite model) | Primary model. Check AI Studio for current names and limits on build day |
+| GEMINI_FALLBACK_MODEL | (current Flash model) | Used if primary fails on all keys |
+| GEMINI_REASONING_EFFORT | none | Disable/minimize thinking for latency. Drop the param if the model rejects it |
+| LLM_TIMEOUT_SECONDS | 8 | Per-attempt timeout |
+| LLM_TEMPERATURE | 0.5 | |
+| LLM_MAX_TOKENS | 300 | Short voice replies |
+| VAPI_SERVER_SECRET | long random string | Shared secret checked on /vapi/webhook and /llm/chat/completions |
+| VAPI_API_KEY | ... | Only for optional script that syncs vapi/assistant.json. Never used at runtime |
+| CLINIC_NAME | Maple Grove Family Health | Injected into prompt |
+| CLINIC_TIMEZONE | America/New_York | Used to compute "today" for DOB validation |
+| SIMULATE_DB_FAILURE | false | Test-only. Ignored unless APP_ENV=development |
+
+## Gemini key pool spec (`app/llm/key_pool.py`)
+- Load keys from `GEMINI_API_KEYS`. Log only masked keys (`AIza...x9Q2`) and key index. Never the full key.
+- Selection: round-robin, skipping keys in cooldown. Prefer the least recently used available key.
+- On 429 (rate limit): cooldown that key (use retry delay from the response if present, else 60s), immediately try the next key.
+- On 5xx or timeout: cooldown 10s, try the next key.
+- On 401/403: mark key disabled for the process lifetime, log an error.
+- Max attempts per request: min(number_of_keys, 3) on the primary model, then 1-2 attempts on GEMINI_FALLBACK_MODEL.
+- Retries only happen BEFORE the first streamed chunk is sent to Vapi. Never retry mid-stream.
+- If everything fails: stream a canned assistant message such as
+  "I'm sorry, I'm having a little trouble on my end. Could you say that one more time?" so the caller never hears silence.
+- Guard shared state with an asyncio.Lock. Expose pool status (masked) in /health.
+- Log per request: key index, model, attempts, time-to-first-token ms, total ms, outcome.
+- Rotation is framed as failover/resilience, not quota evasion. Document that in the README.
+
+## LLM proxy contract (`POST /llm/chat/completions`)
+- Vapi's Custom LLM provider appends `/chat/completions` to the URL we configure, so configure `https://<app>/llm`.
+- Verify the shared secret (accept `Authorization: Bearer <secret>` or `x-vapi-secret`). Log the first raw request in
+  development to confirm the exact shape and headers.
+- Build the upstream request by whitelisting: messages, tools, tool_choice, temperature, max_tokens, stream.
+  Drop Vapi-specific fields (call, metadata, customer, phoneNumber...). Override `model` with our env config.
+- Replace any system message from Vapi with our canonical prompt from `app/llm/prompt.py`, rendered with today's date
+  (clinic timezone) and caller number (from the request's call/customer metadata if present, else "unknown").
+- Stream back OpenAI-style SSE chunks: `data: {json}\n\n`, end with `data: [DONE]\n\n`.
+- Ensure every streamed tool_call has an `id` and `index` (generate an id if Gemini omits it).
+- If Vapi sends `stream: false`, return a normal JSON completion.
+
+## Deployment gotchas
+- Railway: pick US East (Vapi and Gemini round-trips add latency; do not deploy to an Asia region).
+  Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Health check path `/health`.
+- Supabase: create the project in a US East region. Use the SESSION pooler connection string (IPv4). The direct
+  connection host is IPv6-only and often fails from hosting providers. If using the transaction pooler (port 6543),
+  set `connect_args={"statement_cache_size": 0}` for asyncpg.
+- Supabase: enable RLS on every table (no policies). Our backend connects as the table owner so it is unaffected,
+  but this stops Supabase's public REST API from exposing patient rows via the anon key.
+- Vapi: phone number -> assistant. Assistant model provider = Custom LLM pointing at Railway. Tools' server URL =
+  `https://<app>/vapi/webhook`. Same secret configured on both.
+- Testing from outside the U.S.: use the Vapi dashboard's web call ("Talk to assistant"). It hits the same LLM proxy
+  and tools. Web calls have no caller ID, so code must handle a missing caller number.
+- Fallback plan: if the custom LLM proxy is unstable by the 2-hour mark, switch the Vapi assistant to Vapi's built-in
+  Google provider with a single key, keep the proxy code in the repo, and document the trade-off.
+
+## Coding conventions
+- Async everywhere. Type hints on everything. Pydantic v2 style (`field_validator`, `model_config`).
+- Use the `logging` module with JSON output. No print.
+- Domain errors raised in services, translated to HTTP in exception handlers, translated to spoken-friendly results in tool handlers.
+- Keep functions small. Docstrings on public functions. Comments explain "why", not "what".

@@ -1,0 +1,137 @@
+---
+description: How this project will be scored (5 equal dimensions) plus bonus challenges and the exact scenarios reviewers will test. Use it to decide priorities and what "done" means.
+globs:
+alwaysApply: true
+---
+
+# Evaluation Criteria (what reviewers will actually test)
+
+Five dimensions, 20% each. Bonus items don't change the core score but are noted positively.
+Reviewers WILL phone the number and hit the API. Build for those calls, not for a demo in your head.
+
+## Priority order when time is short
+1. A working end-to-end call that saves a record (Working System). If this fails, nothing else counts.
+2. Confirmation read-back, corrections, field-specific re-prompts (Conversational Quality + Edge Cases).
+3. API correctness: envelope, status codes, validation, soft delete (Technical Architecture).
+4. README + commented system prompt (Code Quality & Docs).
+5. Bonus, in this order: duplicate detection, call transcripts, dashboard, tests, appointments, Spanish.
+
+Rules:
+- Never start a bonus item while a core item is broken.
+- Deploy early (first hour) and re-test with a real call after every meaningful change.
+- A partial but working submission beats an ambitious broken one. Unfinished work goes in README "Next Steps".
+
+---
+
+## 1. Working System (20%)
+Reviewers check:
+- Can we call the number and complete a registration?
+- Is the data persisted and retrievable via the API?
+- Does a second call work without data loss?
+
+We must:
+- Keep the Railway service always on (no sleeping instance, no cold start on the first call).
+- Use Supabase (external DB), so redeploys never wipe data.
+- Have `GET /health` that checks DB connectivity and reports the Gemini key pool status (keys masked).
+
+Verify: make 2 real calls back to back, then `GET /patients` and confirm both records. Redeploy, check again.
+
+## 2. Conversational Quality (20%)
+Reviewers check:
+- Sounds natural, not robotic or scripted.
+- Handles corrections gracefully ("Actually, my last name is spelled D-A-V-I-S, not D-A-V-I-E-S").
+- Confirms information before saving.
+- Handles interruptions and out-of-order answers.
+
+We must:
+- Keep agent turns to 1-2 sentences, vary acknowledgments, no lists or symbols in speech.
+- Accept multiple fields in one utterance and never re-ask something already given.
+- Read back all fields (spell the last name, phone digit by digit) before any save.
+- Rely on Vapi barge-in for interruptions and tell the LLM not to restart its sentence after one.
+- Stream LLM output and keep time-to-first-token low. Lag feels robotic even if the words are good.
+
+## 3. Technical Architecture (20%)
+Reviewers check:
+- Clear separation: telephony vs LLM logic vs data layer vs API.
+- Well-designed schema with proper types and constraints.
+- RESTful, validated endpoints.
+- Thoughtful, documented prompt engineering.
+
+We must:
+- Keep folders strictly layered (see `02-tech-stack.mdc`). Vapi payload parsing lives only in the telephony adapter.
+- One service layer shared by REST routes and voice tools.
+- Postgres constraints (CHECK, NOT NULL, enum, partial indexes) mirror Pydantic validation.
+- System prompt lives in code (`app/llm/prompt.py`), section-commented, and is explained in the README.
+
+## 4. Code Quality & Documentation (20%)
+Reviewers check:
+- Organized, readable, consistent code.
+- README complete and accurate.
+- Trade-offs and limitations documented.
+- LLM prompt/system message included and commented.
+
+We must:
+- Type hints everywhere, small functions, docstrings on public functions, no dead code, no print statements.
+- README sections: Overview, Live demo (phone + API URL), Architecture diagram, Tech stack + why, Setup, Env vars,
+  API reference, Prompt design, Testing, Known limitations & trade-offs, Next Steps.
+- `.env.example` listing every variable with a comment.
+
+## 5. Edge Cases & Resilience (20%)
+Reviewers check:
+- Invalid date of birth?
+- Telephony connection drops mid-call?
+- Database write fails: error or silence?
+- Caller wants to start over mid-conversation?
+
+We must:
+- Inject today's date into the prompt so the LLM catches future DOBs, and enforce it again server-side.
+- Save only after confirmation, so a dropped call never creates a half-filled patient. The end-of-call report
+  still logs the call as `incomplete` with the transcript.
+- On DB failure: tool returns a structured error, agent apologizes, retries once, then tells the caller clearly.
+  Log the full payload so no data is silently lost. Never claim success unless the tool returned success.
+- On LLM failure: rotate keys, fall back to a backup model, and as a last resort stream a spoken
+  "sorry, give me a moment" line. Never dead air.
+- "Start over": confirm, wipe collected info, restart from the name. Do not hang up.
+
+---
+
+## Reviewer test scripts (run ALL of these ourselves before submitting)
+| # | Scenario | Expected behavior |
+|---|---|---|
+| 1 | Happy path, required fields only, declines optionals | Collects all, reads back, saves, "You're all set, Jane", ends call |
+| 2 | Info dump: "I'm Jane Doe, born 3/14/1988, I live at 42 Elm Street, Austin Texas 78701" | Captures everything, asks only for what's missing |
+| 3 | "Actually my last name is spelled D-A-V-I-S, not D-A-V-I-E-S" | Updates last name, confirms the new spelling, moves on |
+| 4 | Correction during read-back: "The ZIP is wrong, it's 78702" | Fixes only ZIP, confirms it, then saves after yes |
+| 5 | Future DOB: "January 5th, 2031" | Gently says that's in the future, re-asks DOB only |
+| 6 | 3-digit phone: "555 123" | Asks for the full 10-digit number with area code |
+| 7 | Bad state: "Ontario" | Asks for a U.S. state |
+| 8 | Bad ZIP: "1234" | Asks for a 5-digit ZIP |
+| 9 | Messy email: "jane at gmail" | Asks to spell it, reads it back with "at" and "dot" |
+| 10 | "Can we start over?" mid-call | Confirms, clears data, restarts from name, stays on the call |
+| 11 | Caller talks over the agent | Agent stops and responds to the new input |
+| 12 | Second call, same phone number | "It looks like we already have a record for Jane Doe. Would you like to update your information instead?" |
+| 13 | Opts into insurance + emergency contact | Collects and validates those, includes them in read-back |
+| 14 | Caller hangs up mid-call | No patient row created, call_logs row with status `incomplete`, no server errors |
+| 15 | DB write fails (`SIMULATE_DB_FAILURE=true`, non-prod only) | Agent apologizes, retries once, tells caller clearly, payload logged |
+| 16 | All Gemini keys invalid/rate-limited | Spoken fallback line, no silence, error logged |
+| 17 | "Hablo español" | Switches to Spanish, sets preferred_language = Spanish |
+| 18 | Asks for medical advice / describes an emergency | Polite decline / tells them to call 911 |
+| 19 | API: invalid POST body | 422 envelope with per-field errors |
+| 20 | API: unknown id, deleted id | 404 envelope |
+| 21 | API: DELETE then GET list | Record no longer listed, row still in DB with deleted_at set |
+| 22 | API: partial PUT | 200, only sent fields change, updated_at changes |
+| 23 | Redeploy, then GET /patients | All earlier records still there |
+
+---
+
+## Bonus challenges
+| Bonus | How we implement it | Effort | Order |
+|---|---|---|---|
+| Duplicate detection | `lookup_patient_by_phone` tool on normalized phone. Use Vapi caller ID to pre-fill the phone ("Is the number ending in 4567 the best one?"). Update flow via `update_patient`. Only reveal the name of the existing record. | ~20 min | 1 |
+| Call transcript | Handle Vapi `end-of-call-report` webhook. Upsert `call_logs` (vapi_call_id, patient_id, transcript, summary, recording_url, ended_reason, status, collected_payload). Link to patient via the call id captured when `register_patient` runs. Expose `GET /patients/{id}/calls`. | ~20 min | 2 |
+| Dashboard | `GET /dashboard`: one HTML page served by FastAPI. Table of patients, search by last name, click to view details + call transcripts. Vanilla JS fetch, no build step. | ~20 min | 3 |
+| Automated tests | pytest + httpx AsyncClient: validators, all endpoints (happy + error paths, envelope shape), tool dispatcher, key pool rotation with mocked 429s. | ~25 min | 4 |
+| Appointment scheduling | Mock slots (next 5 weekdays, 9am-4pm, 30 min, minus booked). Tools `get_available_slots`, `book_appointment`. `appointments` table with a partial unique index to block double booking. | ~25 min | 5 |
+| Multi-language | Prompt rule to switch fully to Spanish. Transcriber set to multilingual, voice that supports Spanish. Set preferred_language. Test it on a real call before claiming it. | ~15 min, risky | 6 |
+
+If a bonus is half-done, leave it out of the live path and list it under README "Next Steps".

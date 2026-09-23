@@ -1,0 +1,54 @@
+---
+description: 3-hour build order with time boxes and checkpoints. Use when planning the next step or deciding whether to start a bonus item.
+globs:
+alwaysApply: false
+---
+
+# 3-Hour Build Plan
+
+Principle: get a real phone call saving a real row in the first ~2 hours, then harden, then bonus.
+Deploy in the first hour and keep it deployed. Every checkpoint is tested with a real call or real HTTP request.
+
+## Before the clock starts (do this now, it's not coding time)
+- Vapi account, free U.S. number created (it takes a few minutes to activate).
+- Supabase project in a US East region, session pooler connection string copied.
+- Railway account (check you got a full trial, not a limited one), US East region.
+- Gemini API keys from AI Studio, each from a separate Google Cloud project. Note the current Flash-Lite and Flash model names.
+
+## Phase 1 (0:00-0:30) Skeleton + DB
+- Repo, folder structure, config, JSON logging, envelope + exception handlers, `/health`.
+- Run `001_init.sql` + `seed.sql` in Supabase.
+- Checkpoint: `GET /health` shows DB ok locally.
+
+## Phase 2 (0:30-1:00) REST API + deploy
+- Validators, schemas, PatientService, all 5 endpoints.
+- Deploy to Railway, set env vars.
+- Checkpoint: POST/GET/PUT/DELETE work against the Railway URL. Redeploy, data still there.
+
+## Phase 3 (1:00-1:30) LLM proxy + key pool
+- `/llm/chat/completions` streaming, prompt rendering, key rotation, fallback line.
+- Checkpoint: curl the proxy with a sample OpenAI-style request; tokens stream back; forced 429 rotates keys.
+
+## Phase 4 (1:30-2:00) Vapi wiring + first real call
+- Assistant: custom LLM URL, first message, voice, transcriber, tools, server URL, secret, end-call.
+- `/vapi/webhook` tool dispatcher: lookup, register, update.
+- Checkpoint: web call AND phone call complete a registration; row appears in `GET /patients`.
+- If the proxy is unstable here, switch to Vapi's built-in Google provider (one key) and move on. Document it.
+
+## Phase 5 (2:00-2:30) Edge cases + prompt tuning
+- Run reviewer test scripts 1-16 from `01-evaluation-criteria.mdc`. Fix prompt wording based on transcripts.
+- End-of-call-report -> `call_logs` (transcript bonus comes almost free here).
+- Duplicate detection flow tested with a second call.
+
+## Phase 6 (2:30-2:50) Docs + cheap bonuses
+- README complete (phone number, API URL, architecture, stack reasons, env vars, prompt design, limitations, Next Steps).
+- `/dashboard` page. Core tests if time allows.
+
+## Phase 7 (2:50-3:00) Final check + submit
+- One clean end-to-end call, verify API, confirm no secrets in git history, submit repo URL, phone number, API base URL, testing notes.
+
+## Things that eat time (avoid)
+- Building STT/TTS yourself. Vapi does it.
+- Alembic migrations. A plain SQL file is fine and documented.
+- A separate frontend framework or Vercel deploy for the dashboard.
+- Polishing a bonus while a core scenario still fails.

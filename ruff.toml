@@ -1,0 +1,9 @@
+line-length = 100
+
+# Pydantic field validators must raise ValueError (not TypeError) so FastAPI
+# turns them into 422 envelope details. DOB parsing is a calendar date, not a tz.
+[lint]
+select = ["E", "F", "I", "UP"]
+
+[lint.per-file-ignores]
+"app/core/validators.py" = ["TRY004"]

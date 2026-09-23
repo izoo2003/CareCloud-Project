@@ -1,0 +1,139 @@
+---
+description: Core project brief for the Voice AI Patient Registration Agent. Functional and non-functional requirements, data model, call flow, definition of done. Read before any task.
+globs:
+alwaysApply: true
+---
+
+# Voice AI Patient Registration Agent
+
+## 1. What we are building
+A voice AI agent on a real, dialable U.S. phone number that registers new patients through natural conversation.
+The caller dials in, the agent greets them, collects standard U.S. patient demographics, reads everything back,
+saves the record to a persistent database only after the caller confirms, tells them they're all set, and ends the call.
+A REST API exposes the stored records. If we register "Jane Doe" on call 1, she must exist on call 2.
+
+Context: this is a 3-hour take-home for a Voice AI / Conversational AI Engineer role. Reviewers will phone the number
+and hit the API. The brief is explicit: a simple system that works flawlessly beats an ambitious one that crashes
+on the first call. When in doubt, pick the simpler option that is guaranteed to work end to end.
+
+## 2. High-level architecture
+
+```
+Caller (phone)
+   |  PSTN
+   v
+Vapi  (telephony + speech-to-text + text-to-speech + turn-taking / barge-in)
+   |                                              |
+   | OpenAI-format /chat/completions (SSE)        | webhooks: tool-calls, end-of-call-report
+   v                                              v
+FastAPI on Railway
+   |-- POST /llm/chat/completions  -> Gemini key pool (rotation + failover) -> Gemini API
+   |-- POST /vapi/webhook          -> tool dispatcher -> service layer
+   |-- /patients (REST API)        -> service layer
+   |-- GET /dashboard              -> simple HTML page that reads /patients
+                                          |
+                                          v
+                          Supabase Postgres (patients, appointments, call_logs)
+```
+
+Key rule: the voice agent tools and the REST API call the SAME service layer (`app/services/`).
+Validation lives in one place and is enforced server-side no matter what the LLM does.
+
+## 3. Call flow (happy path)
+1. Greeting: short, warm, says it's the clinic's AI assistant and what it will do.
+2. Collect required fields conversationally. Caller may give several at once or out of order.
+3. Once the phone number is known, call `lookup_patient_by_phone`. If a match exists, offer to update instead (bonus).
+4. Offer optional fields once: email, insurance, emergency contact, preferred language.
+5. Read back every collected field. Ask the caller to confirm or correct.
+6. Only after an explicit "yes": call `register_patient` (or `update_patient`).
+7. Relay the result. Success: "You're all set, {first_name}." Failure: field-specific re-prompt or graceful apology. Never silence.
+8. Bonus: offer a first appointment from mock slots.
+9. End the call with Vapi's end-call tool.
+10. Vapi sends an end-of-call report. We store transcript + summary in `call_logs`, linked to the patient.
+
+## 4. Functional requirements
+
+### FR-1 Telephony and voice agent
+| ID | Requirement |
+|---|---|
+| FR-1.1 | Real, dialable U.S. phone number (Vapi free number). |
+| FR-1.2 | Natural conversation, not an IVR menu. Should feel like a human intake coordinator. |
+| FR-1.3 | LLM-powered (Gemini). Understands varied phrasing, asks clarifying questions, handles corrections. |
+| FR-1.4 | Before saving, reads back ALL collected info and asks the caller to confirm or correct any field. |
+| FR-1.5 | Invalid data (3-digit phone, future DOB, bad ZIP, unknown state, bad email) triggers a re-prompt for THAT field only. |
+| FR-1.6 | After success, brief confirmation ("You're all set, [First Name].") then ends the call gracefully. |
+
+### FR-2 Patient data model
+| Field | Type | Validation | Required |
+|---|---|---|---|
+| patient_id | UUID | Auto-generated | Auto |
+| first_name | String | 1-50 chars, letters + hyphens/apostrophes (we also allow single internal spaces, documented) | Yes |
+| last_name | String | 1-50 chars, letters + hyphens/apostrophes (same note) | Yes |
+| date_of_birth | Date | Valid date, not in the future, MM/DD/YYYY at the API edge | Yes |
+| sex | Enum | Male, Female, Other, Decline to Answer | Yes |
+| phone_number | String | Valid U.S. 10-digit number, stored as 10 digits | Yes |
+| email | String | Valid email format | No |
+| address_line_1 | String | Street address | Yes |
+| address_line_2 | String | Apt/Suite/Unit | No |
+| city | String | 1-100 chars | Yes |
+| state | String | Valid 2-letter U.S. state/territory code | Yes |
+| zip_code | String | 5-digit or ZIP+4 | Yes |
+| insurance_provider | String | Insurance company name | No |
+| insurance_member_id | String | Alphanumeric | No |
+| preferred_language | String | Default "English" | No |
+| emergency_contact_name | String | Full name | No |
+| emergency_contact_phone | String | Valid U.S. 10-digit number | No |
+| created_at | Timestamp | Auto, UTC | Auto |
+| updated_at | Timestamp | Auto on modification, UTC | Auto |
+| deleted_at | Timestamp | Null unless soft-deleted | Auto |
+
+Conversation rule: collect required fields first, then make ONE offer, e.g.
+"I can also collect your email, insurance information, emergency contact, and preferred language. Would you like to provide any of those?"
+The caller opts in. Never force optional fields.
+
+### FR-3 Persistent database
+- Supabase Postgres. Data survives server restarts and redeploys (DB lives outside the app container).
+- Schema enforces the data model with real column types, NOT NULL, CHECK constraints and an enum for sex.
+- Seed 1-2 demo patients with obviously fake data.
+
+### FR-4 REST API
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | /patients | List patients. Optional filters: `?last_name=`, `?date_of_birth=`, `?phone_number=` |
+| GET | /patients/{id} | Get one patient by UUID |
+| POST | /patients | Create patient. Returns created record incl. patient_id (201) |
+| PUT | /patients/{id} | Update patient. Partial updates allowed |
+| DELETE | /patients/{id} | Soft delete: set deleted_at. Never hard delete |
+
+API standards:
+- Status codes: 200, 201, 400, 404, 422, 500.
+- Validate every input server-side. Never trust the voice agent.
+- Every response uses the envelope `{ "data": ..., "error": null }` (or `{ "data": null, "error": {...} }`).
+
+### FR-5 Voice agent <-> database integration
+- On caller confirmation, the agent triggers a write through the service layer (tool -> service -> DB).
+- The agent relays the outcome: success confirmation, or a graceful error message if the write fails.
+- Bonus: phone matches an existing patient -> "It looks like we already have a record for [First] [Last]. Would you like to update your information instead?"
+
+## 5. Non-functional requirements
+| ID | Area | Expectation |
+|---|---|---|
+| NFR-1 | Deployment | Running and callable at review time. FastAPI on Railway, DB on Supabase, number on Vapi. |
+| NFR-2 | Code quality | Clean, readable, intentional structure. Clear layers: telephony adapter, LLM, service, data, API. |
+| NFR-3 | README | Setup, architecture, stack justification, env vars, known limitations/trade-offs, Next Steps, phone number, API base URL, how to test. |
+| NFR-4 | Security | No hardcoded keys. Env vars only. `.env` gitignored, `.env.example` committed. Server-side input sanitization. Verify Vapi requests with a shared secret. RLS enabled on Supabase tables. |
+| NFR-5 | Observability | Structured JSON logs to stdout. At minimum, log the final collected payload of every call. Also log tool calls, LLM latency, key rotation events, errors. |
+| NFR-6 | Latency (our own bar) | Voice UX dies with lag. Target LLM time-to-first-token under ~1s. Stream responses, disable model "thinking", keep replies short, deploy everything in US East. |
+| NFR-7 | Resilience (our own bar) | Timeouts on every external call, Gemini key rotation with failover, spoken fallback instead of dead air, DB errors surfaced to the caller. |
+
+## 6. Out of scope
+HIPAA compliance, real patient data, dashboard login, outbound calling, ZIP-to-city verification.
+
+## 7. Definition of done
+- [ ] Call the number, complete a registration end to end, hear "You're all set".
+- [ ] Record visible via GET /patients and on /dashboard.
+- [ ] Second call with the same phone number is recognized, and data from call 1 still exists.
+- [ ] Every endpoint returns the `{ data, error }` envelope with correct status codes.
+- [ ] Invalid DOB / phone / ZIP / state are re-prompted by field during the call and rejected with 422 by the API.
+- [ ] README complete, including phone number, API base URL, limitations and Next Steps.
+- [ ] No secrets in the repo or in logs.
