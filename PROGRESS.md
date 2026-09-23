@@ -50,6 +50,7 @@ Handoff doc for continuing this take-home. Read this first in a new chat, then `
 - Models: primary `gemini-3.5-flash-lite`, fallback `gemini-3.8-flash`, `GEMINI_REASONING_EFFORT=low` (Gemini 3 cannot use `none`)
 - Local checkpoint: **16/16** unit tests; local curl streamed tokens + `[DONE]`; `llm_request` log had `key_index`, `ttft_ms`, `outcome=success`; forced 429 rotation covered by test
 - `/health` gemini object now includes `available`, `cooling_down`, `disabled` (keys still masked)
+- GitHub `main` @ `cea3d93`. Railway was still serving Phase 2 (`POST /llm` → 404, gemini `configured: false`) after push — trigger a redeploy in the Railway dashboard and paste the Phase 3 vars below. Do not start Phase 4 until Railway `/llm/chat/completions` streams.
 
 ### Seed / demo patients in DB (active)
 - Jane Doe `5125550101`
@@ -71,7 +72,7 @@ Handoff doc for continuing this take-home. Read this first in a new chat, then `
 - [x] GitHub repo pushed (`main`)
 - [x] Railway from GitHub, US East, public URL live
 - [x] Gemini key + `gemini-3.5-flash-lite` / `gemini-3.8-flash` confirmed locally
-- [ ] Copy Phase 3 vars to Railway if not already set: `GEMINI_API_KEYS`, `GEMINI_MODEL`, `GEMINI_FALLBACK_MODEL`, `GEMINI_REASONING_EFFORT=low`, `VAPI_SERVER_SECRET` (same value as local `.env`)
+- [ ] Railway dashboard: redeploy latest `main`, then set `GEMINI_API_KEYS`, `GEMINI_MODEL=gemini-3.5-flash-lite`, `GEMINI_FALLBACK_MODEL=gemini-3.8-flash`, `GEMINI_REASONING_EFFORT=low`, `VAPI_SERVER_SECRET` (copy from local `.env`). Confirm `GET /health` shows gemini `available` and `configured: true`.
 - [ ] Vapi account / free US number (needed Phase 4)
 
 ## Conflicts / decisions already resolved (from Step 1)
