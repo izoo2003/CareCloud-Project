@@ -7,3 +7,5 @@ select = ["E", "F", "I", "UP"]
 
 [lint.per-file-ignores]
 "app/core/validators.py" = ["TRY004"]
+# Spoken prompt lines are written for the LLM, not wrapped to 100 cols.
+"app/llm/prompt.py" = ["E501"]

@@ -47,10 +47,13 @@ def failure(
 
 
 class HealthGeminiStatus(BaseModel):
-    """Masked Gemini key-pool snapshot. Full pool arrives in Phase 3."""
+    """Masked Gemini key-pool snapshot."""
 
     configured: bool
     keys: list[str] = Field(default_factory=list)
+    available: int = 0
+    cooling_down: int = 0
+    disabled: int = 0
 
 
 class HealthData(BaseModel):

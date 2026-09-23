@@ -12,17 +12,20 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.health import router as health_router
+from app.api.llm_proxy import router as llm_router
 from app.api.patients import router as patients_router
 from app.config import get_settings
 from app.core.errors import DatabaseUnavailable, NotFound, ValidationFailed
 from app.core.logging import RequestIdMiddleware, configure_logging
 from app.db.session import dispose_engine
+from app.llm.key_pool import get_key_pool
 from app.schemas.envelope import failure
 
 logger = logging.getLogger(__name__)
 
 _HTTP_ERROR_CODES = {
     400: "BAD_REQUEST",
+    401: "UNAUTHORIZED",
     404: "NOT_FOUND",
     422: "VALIDATION_ERROR",
     500: "INTERNAL_ERROR",
@@ -35,6 +38,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Configure logging on boot; dispose the engine on shutdown."""
     settings = get_settings()
     configure_logging(settings.log_level)
+    get_key_pool()
     logger.info("startup", extra={"app_env": settings.app_env})
     yield
     await dispose_engine()
@@ -51,6 +55,7 @@ def create_app() -> FastAPI:
     application.add_middleware(RequestIdMiddleware)
     application.include_router(health_router)
     application.include_router(patients_router)
+    application.include_router(llm_router)
     _register_exception_handlers(application)
     return application
 

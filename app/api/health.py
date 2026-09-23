@@ -8,10 +8,9 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from app.config import get_settings
 from app.core.errors import DatabaseUnavailable
-from app.core.logging import mask_secret
 from app.db.session import get_engine
+from app.llm.key_pool import get_key_pool
 from app.schemas.envelope import ApiResponse, HealthData, HealthGeminiStatus, success
 
 logger = logging.getLogger(__name__)
@@ -20,12 +19,8 @@ router = APIRouter(tags=["health"])
 
 
 def _gemini_status() -> HealthGeminiStatus:
-    """Report whether keys are configured. The rotation pool is Phase 3."""
-    keys = get_settings().gemini_key_list
-    return HealthGeminiStatus(
-        configured=bool(keys),
-        keys=[mask_secret(key) for key in keys],
-    )
+    """Masked key-pool snapshot: configured keys plus available/cooling/disabled."""
+    return HealthGeminiStatus.model_validate(get_key_pool().status())
 
 
 def _unhealthy(gemini: dict) -> JSONResponse:

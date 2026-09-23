@@ -29,10 +29,10 @@ class Settings(BaseSettings):
     gemini_base_url: str = Field(
         default="https://generativelanguage.googleapis.com/v1beta/openai/",
     )
-    # Names are confirmed against AI Studio before Phase 3; empty is fine until then.
-    gemini_model: str = Field(default="")
-    gemini_fallback_model: str = Field(default="")
-    gemini_reasoning_effort: str = Field(default="none")
+    gemini_model: str = Field(default="gemini-3.5-flash-lite")
+    gemini_fallback_model: str = Field(default="gemini-3.8-flash")
+    # Gemini 3.x cannot disable thinking; "low" is the lowest documented level.
+    gemini_reasoning_effort: str = Field(default="low")
     llm_timeout_seconds: float = Field(default=8)
     llm_temperature: float = Field(default=0.5)
     llm_max_tokens: int = Field(default=300)
