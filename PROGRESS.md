@@ -9,7 +9,7 @@ Handoff doc for continuing this take-home. Read this first in a new chat, then `
 | **1** Skeleton + DB | **DONE** | FastAPI app, JSON logs, envelope handlers, `/health`, Supabase schema + seed |
 | **2** REST API + deploy | **DONE** | Validators, PatientService, CRUD `/patients`, Railway US East live, redeploy persistence confirmed |
 | **3** LLM proxy + key pool | **DONE** | Streaming `/llm/chat/completions`, key rotation, spoken fallback; local + Railway verified |
-| **4** Vapi + first real call | **CODE DONE** | Webhook + tools live in repo; assistant.json checked in. Vapi dashboard + first calls still needed |
+| **4** Vapi + first real call | **BACKEND LIVE** | Webhook + tools on Railway. Jane lookup + Taylor Brooks register confirmed. Vapi account still needed for web/phone calls |
 | **5** Edge cases + prompt | NOT STARTED | |
 | **6** Docs + cheap bonuses | NOT STARTED | |
 | **7** Final check + submit | NOT STARTED | |
@@ -19,7 +19,7 @@ Handoff doc for continuing this take-home. Read this first in a new chat, then `
 - **API / Railway:** `https://carecloud-project.up.railway.app` (US East)
 - **Custom LLM URL for Vapi:** `https://carecloud-project.up.railway.app/llm` (Vapi appends `/chat/completions`)
 - **Webhook:** `https://carecloud-project.up.railway.app/vapi/webhook`
-- **Vapi phone / assistant id:** not created yet (needs a Vapi account)
+- **Vapi phone / assistant id:** not created yet — dashboard is at the signup screen; no `VAPI_API_KEY` in `.env`
 - **GitHub:** `https://github.com/izoo2003/CareCloud-Project` (branch `main`)
 - **Supabase:** project `CareCloud-Project`, ref `ozkflnaxsbxgfyzqiexw`, region `us-east-1`
 - **DB:** session pooler `aws-0-us-east-1.pooler.supabase.com:5432` via `postgresql+asyncpg://` in `.env` (gitignored) and Railway Variables
@@ -58,6 +58,7 @@ Handoff doc for continuing this take-home. Read this first in a new chat, then `
 - Jane Doe `5125550101`
 - John Public `5125550199`
 - Casey Rivera `5125550144` (created on Railway during Phase 2 check)
+- Taylor Brooks `5125550177` (created via Railway `POST /vapi/webhook` register during Phase 4)
 - Riley Nguyen was soft-deleted during local testing (should not appear in GET list)
 
 ### Phase 4 (code complete; live Vapi still pending)
@@ -66,6 +67,7 @@ Handoff doc for continuing this take-home. Read this first in a new chat, then `
 - Route [`app/api/vapi.py`](app/api/vapi.py): `POST /vapi/webhook` — 200 after auth even on tool errors
 - Config [`vapi/assistant.json`](vapi/assistant.json): Custom LLM URL, tools, first message, Deepgram nova-3, Savannah, endCall
 - Tests: [`tests/test_tools.py`](tests/test_tools.py) — both payload shapes, 401, lookup, register, validation, DB failure, end-of-call ACK
+- Railway checkpoint (`2b5d407`): `GET /health` 200; webhook without secret 401; lookup `5125550101` → Jane Doe; register Taylor Brooks → `GET /patients?phone_number=5125550177` returns the row
 
 ## What's NOT built yet (Phase 5+)
 
@@ -81,7 +83,7 @@ Handoff doc for continuing this take-home. Read this first in a new chat, then `
 - [x] Railway from GitHub, US East, public URL live
 - [x] Gemini key + models confirmed locally and on Railway
 - [x] Railway Variables: `GEMINI_API_KEYS`, `GEMINI_MODEL`, `GEMINI_FALLBACK_MODEL`, `GEMINI_REASONING_EFFORT=low`, `VAPI_SERVER_SECRET` (same as local `.env`)
-- [ ] Vapi account / free US number (needed Phase 4)
+- [ ] Vapi account / free US number (signup page; cannot finish web/phone calls without it)
 - [ ] Optional: fix Railway auto-deploy from GitHub if pushes should deploy without a dashboard Redeploy
 
 ## Conflicts / decisions already resolved (from Step 1)
