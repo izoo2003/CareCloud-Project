@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ clinic_name }} — Patients</title>
+  <style>
+    :root {
+      --bg: #f3f6f4;
+      --ink: #1a2420;
+      --muted: #5c6b64;
+      --line: #d5ded8;
+      --panel: #ffffff;
+      --accent: #1f6b4a;
+      --accent-soft: #e7f3ec;
+      --warn: #8a4b12;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, #e8f2ec 0%, transparent 42%),
+        linear-gradient(180deg, #f7faf8 0%, var(--bg) 100%);
+      min-height: 100vh;
+    }
+    header {
+      padding: 1.5rem 1.5rem 0.75rem;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.72);
+      backdrop-filter: blur(8px);
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      letter-spacing: -0.02em;
+    }
+    header p {
+      margin: 0.35rem 0 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    main {
+      display: grid;
+      grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.1fr);
+      gap: 1rem;
+      padding: 1rem 1.5rem 2rem;
+      max-width: 1200px;
+    }
+    @media (max-width: 860px) {
+      main { grid-template-columns: 1fr; }
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 1rem;
+      min-height: 420px;
+    }
+    .toolbar {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 0.85rem;
+    }
+    input[type="search"] {
+      flex: 1;
+      padding: 0.55rem 0.7rem;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      background: var(--accent);
+      color: white;
+      padding: 0.55rem 0.85rem;
+      font: inherit;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.55rem 0.35rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
+    tr.patient-row { cursor: pointer; }
+    tr.patient-row:hover, tr.patient-row.active { background: var(--accent-soft); }
+    .empty, .error {
+      color: var(--muted);
+      padding: 1rem 0.25rem;
+    }
+    .error { color: var(--warn); }
+    .detail h2 {
+      margin: 0 0 0.5rem;
+      font-size: 1.15rem;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 1rem;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 0.35rem 0.75rem;
+      font-size: 0.92rem;
+      margin-bottom: 1.25rem;
+    }
+    .grid dt { color: var(--muted); }
+    .grid dd { margin: 0; }
+    .calls h3 {
+      margin: 0 0 0.6rem;
+      font-size: 1rem;
+    }
+    .call {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.75rem;
+      margin-bottom: 0.6rem;
+      background: #fbfcfb;
+    }
+    .call .status {
+      display: inline-block;
+      padding: 0.1rem 0.45rem;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .call pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0.5rem 0 0;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 0.8rem;
+      max-height: 220px;
+      overflow: auto;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>{{ clinic_name }}</h1>
+    <p>Patient registration dashboard — search by last name, open a row for details and call transcripts.</p>
+  </header>
+  <main>
+    <section class="panel">
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Filter by last name" />
+        <button id="reload" type="button" class="secondary">Refresh</button>
+      </div>
+      <div id="list">Loading patients…</div>
+    </section>
+    <section class="panel detail" id="detail">
+      <p class="empty">Select a patient to view details and calls.</p>
+    </section>
+  </main>
+  <script>
+    const listEl = document.getElementById("list");
+    const detailEl = document.getElementById("detail");
+    const searchEl = document.getElementById("search");
+    let patients = [];
+    let selectedId = null;
+
+    function esc(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function formatPhone(phone) {
+      const digits = String(phone || "").replace(/\D/g, "");
+      if (digits.length !== 10) return phone || "—";
+      return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+    }
+
+    async function fetchJson(url) {
+      const response = await fetch(url);
+      const body = await response.json();
+      if (!response.ok || body.error) {
+        const message = body?.error?.message || `Request failed (${response.status})`;
+        throw new Error(message);
+      }
+      return body.data;
+    }
+
+    function renderList() {
+      const needle = searchEl.value.trim().toLowerCase();
+      const rows = patients.filter((p) =>
+        !needle || String(p.last_name || "").toLowerCase().includes(needle)
+      );
+      if (!rows.length) {
+        listEl.innerHTML = `<p class="empty">No patients found.</p>`;
+        return;
+      }
+      listEl.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>DOB</th>
+              <th>Phone</th>
+              <th>City</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((p) => `
+              <tr class="patient-row ${p.patient_id === selectedId ? "active" : ""}"
+                  data-id="${esc(p.patient_id)}">
+                <td>${esc(p.first_name)} ${esc(p.last_name)}</td>
+                <td>${esc(p.date_of_birth)}</td>
+                <td>${esc(formatPhone(p.phone_number))}</td>
+                <td>${esc(p.city)}, ${esc(p.state)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+      listEl.querySelectorAll("tr.patient-row").forEach((row) => {
+        row.addEventListener("click", () => selectPatient(row.dataset.id));
+      });
+    }
+
+    async function selectPatient(patientId) {
+      selectedId = patientId;
+      renderList();
+      detailEl.innerHTML = `<p class="empty">Loading…</p>`;
+      try {
+        const [patient, calls] = await Promise.all([
+          fetchJson(`/patients/${patientId}`),
+          fetchJson(`/patients/${patientId}/calls`),
+        ]);
+        const fields = [
+          ["Sex", patient.sex],
+          ["Phone", formatPhone(patient.phone_number)],
+          ["Email", patient.email || "—"],
+          ["Address", [patient.address_line_1, patient.address_line_2].filter(Boolean).join(", ")],
+          ["City / State / ZIP", `${patient.city}, ${patient.state} ${patient.zip_code}`],
+          ["Language", patient.preferred_language],
+          ["Insurance", patient.insurance_provider
+            ? `${patient.insurance_provider}${patient.insurance_member_id ? " · " + patient.insurance_member_id : ""}`
+            : "—"],
+          ["Emergency", patient.emergency_contact_name
+            ? `${patient.emergency_contact_name} · ${formatPhone(patient.emergency_contact_phone)}`
+            : "—"],
+        ];
+        detailEl.innerHTML = `
+          <h2>${esc(patient.first_name)} ${esc(patient.last_name)}</h2>
+          <p class="meta">DOB ${esc(patient.date_of_birth)} · created ${esc(patient.created_at)}</p>
+          <dl class="grid">
+            ${fields.map(([label, value]) => `
+              <dt>${esc(label)}</dt><dd>${esc(value)}</dd>
+            `).join("")}
+          </dl>
+          <div class="calls">
+            <h3>Call transcripts (${calls.length})</h3>
+            ${calls.length ? calls.map((call) => `
+              <article class="call">
+                <div>
+                  <span class="status">${esc(call.status)}</span>
+                  <span class="meta"> · ${esc(call.ended_reason || "no reason")} · ${esc(call.ended_at || call.created_at)}</span>
+                </div>
+                ${call.summary ? `<p>${esc(call.summary)}</p>` : ""}
+                <pre>${esc(call.transcript || "No transcript stored.")}</pre>
+              </article>
+            `).join("") : `<p class="empty">No calls linked to this patient yet.</p>`}
+          </div>
+        `;
+      } catch (err) {
+        detailEl.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+      }
+    }
+
+    async function loadPatients() {
+      listEl.innerHTML = `<p class="empty">Loading patients…</p>`;
+      try {
+        patients = await fetchJson("/patients?limit=200");
+        renderList();
+      } catch (err) {
+        listEl.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+      }
+    }
+
+    searchEl.addEventListener("input", renderList);
+    document.getElementById("reload").addEventListener("click", loadPatients);
+    loadPatients();
+  </script>
+</body>
+</html>

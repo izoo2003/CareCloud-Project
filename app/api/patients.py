@@ -11,8 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import validators as v
 from app.db.session import get_session
+from app.schemas.call_log import CallLogOut
 from app.schemas.envelope import ApiResponse, success
 from app.schemas.patient import PatientCreate, PatientOut, PatientUpdate
+from app.services.call_log_service import CallLogService
 from app.services.patient_service import PatientService
 
 router = APIRouter(prefix="/patients", tags=["patients"])
@@ -20,6 +22,10 @@ router = APIRouter(prefix="/patients", tags=["patients"])
 
 def _service(session: Annotated[AsyncSession, Depends(get_session)]) -> PatientService:
     return PatientService(session)
+
+
+def _call_logs(session: Annotated[AsyncSession, Depends(get_session)]) -> CallLogService:
+    return CallLogService(session)
 
 
 def _parse_patient_id(patient_id: str) -> uuid.UUID:
@@ -89,6 +95,22 @@ async def get_patient(
     """Get one active patient by UUID."""
     patient = await service.get(_parse_patient_id(patient_id))
     return success(_to_out(patient))
+
+
+@router.get(
+    "/{patient_id}/calls",
+    response_model=ApiResponse[list[CallLogOut]],
+    responses={400: {"description": "Bad UUID"}, 404: {"description": "Not found"}},
+)
+async def list_patient_calls(
+    patient_id: str,
+    call_logs: Annotated[CallLogService, Depends(_call_logs)],
+) -> dict:
+    """List call transcripts for one active patient. Newest first."""
+    rows = await call_logs.list_for_patient(_parse_patient_id(patient_id))
+    return success(
+        [CallLogOut.model_validate(row).model_dump(mode="json") for row in rows]
+    )
 
 
 @router.post(

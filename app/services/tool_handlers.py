@@ -11,7 +11,8 @@ from pydantic import ValidationError
 
 from app.core.errors import DatabaseUnavailable, NotFound, ValidationFailed
 from app.core.validators import normalize_phone
-from app.schemas.patient import PatientCreate, PatientUpdate
+from app.schemas.patient import PatientCreate, PatientOut, PatientUpdate
+from app.services.call_log_service import CallLogService
 from app.services.patient_service import PatientService
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,8 @@ async def dispatch_tool(
     arguments: dict[str, Any],
     service: PatientService,
     vapi_call_id: str | None,
+    *,
+    call_logs: CallLogService | None = None,
 ) -> dict[str, Any]:
     """Run one named tool. Always returns a JSON-serializable result dict."""
     started = time.perf_counter()
@@ -39,9 +42,13 @@ async def dispatch_tool(
         if name == "lookup_patient_by_phone":
             result = await lookup_patient_by_phone(arguments, service)
         elif name == "register_patient":
-            result = await register_patient(arguments, service, vapi_call_id)
+            result = await register_patient(
+                arguments, service, vapi_call_id, call_logs=call_logs
+            )
         elif name == "update_patient":
-            result = await update_patient(arguments, service, vapi_call_id)
+            result = await update_patient(
+                arguments, service, vapi_call_id, call_logs=call_logs
+            )
         else:
             result = _server_result()
             result["next_step"] = "Continue the conversation without this tool."
@@ -96,6 +103,8 @@ async def register_patient(
     arguments: dict[str, Any],
     service: PatientService,
     vapi_call_id: str | None,
+    *,
+    call_logs: CallLogService | None = None,
 ) -> dict[str, Any]:
     """Create a patient after the caller confirmed the read-back."""
     try:
@@ -106,6 +115,12 @@ async def register_patient(
         patient = await service.create(payload)
     except ValidationFailed as exc:
         return _validation_result(exc.details or [{"field": "body", "message": exc.message}])
+    await _maybe_link_call(
+        call_logs,
+        vapi_call_id,
+        patient.patient_id,
+        collected_payload=_patient_payload(patient, fallback=payload),
+    )
     logger.info(
         "tool_register",
         extra={"vapi_call_id": vapi_call_id, "patient_id": str(patient.patient_id)},
@@ -122,6 +137,8 @@ async def update_patient(
     arguments: dict[str, Any],
     service: PatientService,
     vapi_call_id: str | None,
+    *,
+    call_logs: CallLogService | None = None,
 ) -> dict[str, Any]:
     """Partial update after a returning caller confirms the changes."""
     raw_id = arguments.get("patient_id")
@@ -146,6 +163,12 @@ async def update_patient(
         return _validation_result(exc.details or [{"field": "body", "message": exc.message}])
     except NotFound:
         return _validation_result([{"field": "patient_id", "message": "Patient not found"}])
+    await _maybe_link_call(
+        call_logs,
+        vapi_call_id,
+        patient.patient_id,
+        collected_payload=_patient_payload(patient, fallback=payload),
+    )
     logger.info(
         "tool_update",
         extra={"vapi_call_id": vapi_call_id, "patient_id": str(patient.patient_id)},
@@ -156,6 +179,41 @@ async def update_patient(
         "first_name": patient.first_name,
         "next_step": _SUCCESS_NEXT,
     }
+
+
+async def _maybe_link_call(
+    call_logs: CallLogService | None,
+    vapi_call_id: str | None,
+    patient_id: uuid.UUID,
+    *,
+    collected_payload: dict[str, Any] | None,
+) -> None:
+    """Best-effort link so hangup-after-save still attaches the patient."""
+    if call_logs is None or not vapi_call_id:
+        return
+    try:
+        await call_logs.link_patient(
+            vapi_call_id,
+            patient_id,
+            collected_payload=collected_payload,
+        )
+    except Exception:
+        logger.exception(
+            "call_log_link_failed",
+            extra={"vapi_call_id": vapi_call_id, "patient_id": str(patient_id)},
+        )
+
+
+def _patient_payload(patient: Any, *, fallback: Any) -> dict[str, Any]:
+    """Prefer PatientOut; fall back to the validated request body for tests/fakes."""
+    try:
+        return PatientOut.model_validate(patient).model_dump(mode="json")
+    except Exception:
+        if hasattr(fallback, "model_dump"):
+            data = fallback.model_dump(mode="json")
+            data["patient_id"] = str(getattr(patient, "patient_id", ""))
+            return data
+        return {"patient_id": str(getattr(patient, "patient_id", ""))}
 
 
 def _validation_result(field_errors: list[dict[str, str]]) -> dict[str, Any]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException, Request
@@ -84,6 +85,59 @@ def ack_event() -> dict[str, bool]:
     return {"ok": True}
 
 
+def parse_end_of_call_report(body: dict[str, Any]) -> dict[str, Any]:
+    """Extract call_logs fields from a Vapi end-of-call-report payload.
+
+    Defensive: Vapi has moved summary/transcript/recording around over time.
+    """
+    message = body.get("message") if isinstance(body.get("message"), dict) else {}
+    call = message.get("call") if isinstance(message.get("call"), dict) else {}
+    if not call and isinstance(body.get("call"), dict):
+        call = body["call"]
+
+    raw_call_id = call.get("id")
+    vapi_call_id = raw_call_id.strip() if isinstance(raw_call_id, str) else None
+
+    artifact = message.get("artifact") if isinstance(message.get("artifact"), dict) else {}
+    analysis = message.get("analysis") if isinstance(message.get("analysis"), dict) else {}
+    if not analysis and isinstance(call.get("analysis"), dict):
+        analysis = call["analysis"]
+
+    transcript = _as_optional_str(artifact.get("transcript"))
+    if transcript is None:
+        transcript = _as_optional_str(message.get("transcript"))
+
+    summary = _as_optional_str(analysis.get("summary"))
+    if summary is None:
+        summary = _as_optional_str(message.get("summary"))
+
+    ended_reason = _as_optional_str(message.get("endedReason"))
+    if ended_reason is None:
+        ended_reason = _as_optional_str(call.get("endedReason"))
+
+    recording_url = _extract_recording_url(artifact.get("recording"))
+    if recording_url is None:
+        recording_url = _extract_recording_url(message.get("recordingUrl"))
+    if recording_url is None:
+        recording_url = _extract_recording_url(message.get("recording"))
+
+    caller_number = _extract_caller_number(message, call)
+
+    started_at = _parse_iso_datetime(message.get("startedAt") or call.get("startedAt"))
+    ended_at = _parse_iso_datetime(message.get("endedAt") or call.get("endedAt"))
+
+    return {
+        "vapi_call_id": vapi_call_id,
+        "caller_number": caller_number,
+        "ended_reason": ended_reason,
+        "summary": summary,
+        "transcript": transcript,
+        "recording_url": recording_url,
+        "started_at": started_at,
+        "ended_at": ended_at,
+    }
+
+
 def maybe_log_first_webhook_shape(body: dict[str, Any]) -> None:
     """Once per process, in development only, log the incoming Vapi keys."""
     global _logged_first_shape
@@ -141,3 +195,48 @@ def _coerce_arguments(raw: object) -> dict[str, Any]:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+def _as_optional_str(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _extract_recording_url(recording: object) -> str | None:
+    if isinstance(recording, str) and recording.strip():
+        return recording.strip()
+    if not isinstance(recording, dict):
+        return None
+    for key in ("url", "stereoUrl", "monoUrl", "recordingUrl"):
+        candidate = recording.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def _extract_caller_number(message: dict[str, Any], call: dict[str, Any]) -> str | None:
+    customer = message.get("customer") if isinstance(message.get("customer"), dict) else {}
+    if not customer and isinstance(call.get("customer"), dict):
+        customer = call["customer"]
+    for source in (customer, call, message):
+        if not isinstance(source, dict):
+            continue
+        for key in ("number", "phoneNumber", "customerNumber"):
+            text = _as_optional_str(source.get(key))
+            if text:
+                return text
+    return None
+
+
+def _parse_iso_datetime(value: object) -> datetime | None:
+    """Best-effort parse of Vapi ISO timestamps."""
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip().replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None

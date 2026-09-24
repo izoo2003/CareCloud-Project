@@ -55,23 +55,63 @@ class FakePatientService:
         raise NotFound("Patient not found")
 
 
+class FakeCallLogService:
+    """In-memory call log stand-in for webhook tests."""
+
+    def __init__(self) -> None:
+        self.links: list[tuple[str, uuid.UUID, dict[str, Any] | None]] = []
+        self.reports: list[dict[str, Any]] = []
+
+    async def link_patient(
+        self,
+        vapi_call_id: str,
+        patient_id: uuid.UUID,
+        *,
+        collected_payload: dict[str, Any] | None = None,
+    ) -> Any:
+        self.links.append((vapi_call_id, patient_id, collected_payload))
+        return SimpleNamespace(
+            vapi_call_id=vapi_call_id,
+            patient_id=patient_id,
+            status="in_progress",
+        )
+
+    async def upsert_from_report(self, report: dict[str, Any]) -> Any:
+        self.reports.append(report)
+        return SimpleNamespace(
+            vapi_call_id=report.get("vapi_call_id"),
+            status="incomplete",
+            patient_id=None,
+        )
+
+
 @pytest.fixture
 def service() -> FakePatientService:
     return FakePatientService()
 
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch, service: FakePatientService) -> TestClient:
+def call_logs() -> FakeCallLogService:
+    return FakeCallLogService()
+
+
+@pytest.fixture
+def client(
+    monkeypatch: pytest.MonkeyPatch,
+    service: FakePatientService,
+    call_logs: FakeCallLogService,
+) -> TestClient:
     monkeypatch.setenv("VAPI_SERVER_SECRET", "test-secret")
     monkeypatch.setenv("GEMINI_API_KEYS", "AIza_test_key_one_xxxx")
     monkeypatch.setenv("APP_ENV", "development")
     get_settings.cache_clear()
     reset_key_pool(None)
 
-    from app.api.vapi import get_patient_service
+    from app.api.vapi import get_call_log_service, get_patient_service
 
     application = create_app()
     application.dependency_overrides[get_patient_service] = lambda: service
+    application.dependency_overrides[get_call_log_service] = lambda: call_logs
     with TestClient(application) as test_client:
         yield test_client
     application.dependency_overrides.clear()
@@ -170,20 +210,70 @@ def test_rejects_wrong_secret(client: TestClient) -> None:
     assert response.status_code == 401
 
 
-def test_end_of_call_report_acks_200(client: TestClient) -> None:
+def test_end_of_call_report_persists_transcript(
+    client: TestClient, call_logs: FakeCallLogService
+) -> None:
     response = client.post(
         "/vapi/webhook",
         headers=_headers(),
         json={
             "message": {
                 "type": "end-of-call-report",
+                "endedReason": "customer-ended-call",
+                "startedAt": "2026-09-24T12:00:00.000Z",
+                "endedAt": "2026-09-24T12:03:00.000Z",
                 "call": {"id": "call-xyz"},
-                "endedReason": "hangup",
+                "customer": {"number": "+15125550101"},
+                "artifact": {
+                    "transcript": "AI: Hi. User: Jane Doe.",
+                    "recording": {"url": "https://example.com/rec.wav"},
+                },
+                "analysis": {"summary": "Caller started registration then hung up."},
             }
         },
     )
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+    assert len(call_logs.reports) == 1
+    report = call_logs.reports[0]
+    assert report["vapi_call_id"] == "call-xyz"
+    assert report["ended_reason"] == "customer-ended-call"
+    assert report["transcript"] == "AI: Hi. User: Jane Doe."
+    assert report["summary"] == "Caller started registration then hung up."
+    assert report["recording_url"] == "https://example.com/rec.wav"
+    assert report["caller_number"] == "+15125550101"
+
+
+def test_register_links_call_log(
+    client: TestClient, service: FakePatientService, call_logs: FakeCallLogService
+) -> None:
+    response = client.post(
+        "/vapi/webhook",
+        headers=_headers(),
+        json={
+            "message": {
+                "type": "tool-calls",
+                "call": {"id": "call-reg"},
+                "toolCallList": [
+                    {
+                        "id": "tc_reg",
+                        "name": "register_patient",
+                        "parameters": REGISTER_ARGS,
+                    }
+                ],
+            }
+        },
+    )
+    assert response.status_code == 200
+    result = _result(response.json())
+    assert result["success"] is True
+    assert len(call_logs.links) == 1
+    linked_call_id, linked_patient_id, payload = call_logs.links[0]
+    assert linked_call_id == "call-reg"
+    assert str(linked_patient_id) == result["patient_id"]
+    assert payload is not None
+    assert payload["first_name"] == "Morgan"
+    assert len(service.created) == 1
 
 
 def test_lookup_top_level_shape_found(
