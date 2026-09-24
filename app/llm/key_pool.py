@@ -75,6 +75,17 @@ class KeyPool:
             chosen.last_used = now
             return KeyLease(index=chosen.index, key=chosen.key, masked=chosen.masked)
 
+    def lease_by_index(self, index: int) -> KeyLease | None:
+        """Return a lease even if the key is cooling (not if disabled).
+
+        Used mid-request so one key can still try the fallback model after the
+        primary attempt put that key into a short cooldown.
+        """
+        state = self._by_index(index)
+        if state is None or state.disabled:
+            return None
+        return KeyLease(index=state.index, key=state.key, masked=state.masked)
+
     async def report_success(self, index: int) -> None:
         """Clear a transient cooldown after a good response."""
         async with self._lock:

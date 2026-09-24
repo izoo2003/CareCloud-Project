@@ -86,6 +86,51 @@ async def test_stream_rotates_after_429(monkeypatch: pytest.MonkeyPatch) -> None
     assert status["disabled"] == 0
 
 
+@pytest.mark.asyncio
+async def test_stream_single_key_tries_fallback_model_after_429(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One key: primary 429 must still attempt the fallback model (reuse lease)."""
+    key = "AIza_test_key_only_xxxx"
+    pool = KeyPool([key])
+    settings = Settings(
+        gemini_api_keys=key,
+        gemini_model="gemini-primary",
+        gemini_fallback_model="gemini-fallback,gemini-tertiary",
+        gemini_reasoning_effort="low",
+    )
+    calls: list[str] = []
+
+    class _TrackingClient(_FakeClient):
+        async def create(self, **kwargs: Any) -> _FakeStream:
+            model = str(kwargs.get("model", ""))
+            calls.append(model)
+            if model == "gemini-primary":
+                raise _rate_limit_error()
+            return _FakeStream(
+                [{"choices": [{"index": 0, "delta": {"content": "Recovered."}}]}]
+            )
+
+    def fake_make_client(_settings: Settings, api_key: str) -> _TrackingClient:
+        return _TrackingClient(api_key, {api_key: "ok"})
+
+    monkeypatch.setattr("app.llm.gemini_client._make_client", fake_make_client)
+
+    chunks: list[str] = []
+    async for line in stream_completion(
+        {"messages": [{"role": "user", "content": "hi"}]},
+        settings=settings,
+        pool=pool,
+    ):
+        chunks.append(line)
+
+    text = "".join(chunks)
+    assert "Recovered." in text
+    assert "gemini-primary" in calls
+    assert "gemini-fallback" in calls
+    assert "trouble on my end" not in text
+
+
 def test_ensure_tool_call_ids_fills_missing() -> None:
     payload = {"choices": [{"delta": {"tool_calls": [{"function": {"name": "register_patient"}}]}}]}
     _ensure_tool_call_ids(payload)

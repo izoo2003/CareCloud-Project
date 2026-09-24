@@ -29,11 +29,11 @@ class Settings(BaseSettings):
     gemini_base_url: str = Field(
         default="https://generativelanguage.googleapis.com/v1beta/openai/",
     )
-    gemini_model: str = Field(default="gemini-3.5-flash-lite")
-    gemini_fallback_model: str = Field(default="gemini-3.8-flash")
+    gemini_model: str = Field(default="gemini-3.5-flash")
+    gemini_fallback_model: str = Field(default="gemini-3.6-flash,gemini-3.5-flash")
     # Gemini 3.x cannot disable thinking; "low" is the lowest documented level.
     gemini_reasoning_effort: str = Field(default="low")
-    llm_timeout_seconds: float = Field(default=8)
+    llm_timeout_seconds: float = Field(default=20)
     llm_temperature: float = Field(default=0.5)
     llm_max_tokens: int = Field(default=300)
 
@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     def gemini_key_list(self) -> list[str]:
         """Parsed Gemini keys with empty entries dropped."""
         return [key.strip() for key in self.gemini_api_keys.split(",") if key.strip()]
+
+    @property
+    def gemini_fallback_models(self) -> list[str]:
+        """Fallback model names from GEMINI_FALLBACK_MODEL (comma-separated)."""
+        return [
+            name.strip()
+            for name in self.gemini_fallback_model.split(",")
+            if name.strip()
+        ]
 
 
 @lru_cache

@@ -175,17 +175,34 @@ async def _report_failure(pool: KeyPool, lease: KeyLease, exc: BaseException) ->
 
 
 def _attempt_plan(settings: Settings, pool_size: int) -> list[str]:
-    """Primary model up to min(keys, 3), then fallback model 1–2 times."""
+    """Primary model up to min(keys, 3), then each fallback model 1–2 times."""
     if pool_size <= 0:
         return []
     plan: list[str] = []
     primary = settings.gemini_model.strip()
-    fallback = settings.gemini_fallback_model.strip()
     if primary:
         plan.extend([primary] * min(pool_size, _PRIMARY_ATTEMPT_CAP))
-    if fallback and fallback != primary:
+    seen = {primary} if primary else set()
+    for fallback in settings.gemini_fallback_models:
+        if fallback in seen:
+            continue
+        seen.add(fallback)
         plan.extend([fallback] * min(pool_size, _FALLBACK_ATTEMPT_CAP))
     return plan
+
+
+async def _acquire_for_attempt(
+    pool: KeyPool,
+    *,
+    last_key_index: int | None,
+) -> KeyLease | None:
+    """Prefer a fresh key; if all are cooling mid-request, reuse the last key."""
+    lease = await pool.acquire()
+    if lease is not None:
+        return lease
+    if last_key_index is None:
+        return None
+    return pool.lease_by_index(last_key_index)
 
 
 def _log_request(
@@ -225,7 +242,7 @@ async def stream_completion(
     last_key_index: int | None = None
 
     for model in _attempt_plan(settings, pool.size):
-        lease = await pool.acquire()
+        lease = await _acquire_for_attempt(pool, last_key_index=last_key_index)
         if lease is None:
             break
         attempts += 1
@@ -338,7 +355,7 @@ async def complete(
     last_key_index: int | None = None
 
     for model in _attempt_plan(settings, pool.size):
-        lease = await pool.acquire()
+        lease = await _acquire_for_attempt(pool, last_key_index=last_key_index)
         if lease is None:
             break
         attempts += 1
